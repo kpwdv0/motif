@@ -1,0 +1,5 @@
+__pycache__/
+*.pt
+wandb/
+*.mid
+maestro-v3.0.0-midi.zip
