@@ -44,6 +44,7 @@ def skyline_melody(notes, maxgap = 0.5):
     return filtered
 
 
+
 r"""
 
 tested it and got some notesss:
@@ -103,6 +104,7 @@ def note_transitions(melody):
         else:
             contour = 0
 
+        # rhythm, duration vs the previous note
         prev_dur = prev_end - prev_start
         curr_dur = curr_end - curr_start
 
@@ -131,6 +133,7 @@ def find_motifs(melody, window_size=4):
         window = tuple(signatures[i:i + window_size])
         occurrences[window].append(i)
 
+    # only keep repeats, and no trills
     motifs = {
         pattern: positions
     for pattern, positions in occurrences.items()
@@ -144,10 +147,12 @@ def build_training_examples(melody, motifs, num_cuts=4, min_context=20, min_targ
 
     examples = []
 
+    # where the cut is allowed to land
     earliest_cut = min_context
     latest_cut = len(melody) - min_target
 
     if earliest_cut >= latest_cut:
+        # too short
         return examples
 
     for _ in range(num_cuts):
@@ -169,6 +174,118 @@ def build_training_examples(melody, motifs, num_cuts=4, min_context=20, min_targ
         })
 
     return examples
+
+
+def build_training_examples_polyphonic(raw_notes, melody, motifs, num_cuts=4, min_context=20, min_target=20):
+    """
+    same as build_training_examples, but the target is every note after the
+    cut (from raw_notes) instead of just the melody, so the model has to
+    turn a melody into full piano.
+
+    raw_notes: loadnotes output, melody: skyline_melody output,
+    motifs: find_motifs output
+    """
+    if len(melody) < min_context + min_target:
+        return []
+
+    examples = []
+    earliest_cut_idx = min_context
+    latest_cut_idx = len(melody) - min_target
+
+    if earliest_cut_idx >= latest_cut_idx:
+        return []
+
+    for _ in range(num_cuts):
+        cut_idx = random.randint(earliest_cut_idx, latest_cut_idx)
+        cut_time = melody[cut_idx][0]
+
+        context = melody[:cut_idx]
+
+        # everything after the cut, all voices
+        target = [n for n in raw_notes if n[0] >= cut_time]
+
+        if len(context) < 2 or len(target) < 2:
+            continue
+
+        motifs_in_context = {}
+        for pattern, positions in motifs.items():
+            before_cut = [p for p in positions if p < cut_idx]
+            if before_cut:
+                motifs_in_context[pattern] = before_cut
+
+        examples.append({
+            "motifs": motifs_in_context,
+            "context": context,
+            "target": target,
+            "cut_time": cut_time,
+        })
+
+    return examples
+
+
+def build_token_concatenated_example(raw_notes, melody, motifs, tokenizer, context_seconds=16.0, target_seconds=4.0):
+    """
+    magenta rt style alternative to the cross attention setup. one flat token
+    sequence: [motif] [delimiter] [context] [target]. no gate, aria just reads
+    it like normal input.
+
+    context is a fixed window (context_seconds) before a random cut. magenta
+    uses 10s of audio, i went with 16s as a rough "8 bars" since there's no bar
+    info in the data. cuts without enough history before them are skipped
+    rather than padded with fake notes.
+
+    tokenizer is aria's tokenizer. returns None if there's no motif, the piece
+    is too short, or tokenizing fails.
+    """
+    from motifattention import notes_to_token_ids
+    import torch
+
+    if not motifs:
+        return None
+
+    # just use the first motif
+    first_pattern, positions = next(iter(motifs.items()))
+    motif_start_idx = positions[0]
+    motif_notes = melody[motif_start_idx:motif_start_idx + 7]
+    if len(motif_notes) < 2:
+        return None
+
+    if not melody:
+        return None
+
+    latest_cut_time = melody[-1][0]
+    earliest_cut_time = melody[0][0] + context_seconds
+    if earliest_cut_time >= latest_cut_time:
+        return None
+
+    cut_time = random.uniform(earliest_cut_time, latest_cut_time)
+
+    context_notes = [n for n in melody if cut_time - context_seconds <= n[0] < cut_time]
+    target_notes = [n for n in raw_notes if cut_time <= n[0] < cut_time + target_seconds]
+
+    if len(context_notes) < 2 or len(target_notes) < 2:
+        return None
+
+    try:
+        motif_token_ids = notes_to_token_ids(motif_notes, tokenizer)[0]
+        context_target_ids = notes_to_token_ids(context_notes + target_notes, tokenizer)[0]
+        context_only_ids = notes_to_token_ids(context_notes, tokenizer)[0]
+    except Exception:
+        return None
+
+    delimiter_id = tokenizer.tok_to_id[tokenizer.delimiter_tok]
+    delimiter_tensor = torch.tensor([delimiter_id])
+
+    full_sequence = torch.cat([motif_token_ids, delimiter_tensor, context_target_ids])
+
+    # where the target starts in token space, so the loss can skip everything before it
+    target_start_index = motif_token_ids.shape[0] + 1 + context_only_ids.shape[0]
+
+    return {
+        "input_ids": full_sequence,
+        "target_start_index": target_start_index,
+        "cut_time": cut_time,
+    }
 
 
 def is_periodic(pattern):

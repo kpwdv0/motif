@@ -1,30 +1,35 @@
 import os
 import json
 import time
-from doingstuff import loadnotes, skyline_melody, find_motifs, build_training_examples
+from doingstuff import loadnotes, skyline_melody, find_motifs, build_training_examples_polyphonic
 
-def clean_for_json(melody_notes):
-
-    return [[float(start), float(end), int(pitch)] for start, end, pitch in melody_notes]
+def clean_for_json(notes):
+    """json.dump chokes on numpy floats, so turn every note into a plain list of python numbers"""
+    cleaned = []
+    for note in notes:
+        cleaned.append([float(note[0]), float(note[1]), int(note[2])] +
+                        ([int(note[3])] if len(note) > 3 else []))
+    return cleaned
 
 
 def precompute_piece(path):
-
+    """context = melody up to the cut, target = all the raw notes after it"""
     notes = loadnotes(path)
     melody = skyline_melody(notes)
     motifs = find_motifs(melody, window_size=6)
-    examples = build_training_examples(melody, motifs, num_cuts=4)
+    examples = build_training_examples_polyphonic(notes, melody, motifs, num_cuts=4)
 
     if not examples:
         return None
 
+    # tuple keys don't work in json so they get stringified
     cleaned_examples = []
     for ex in examples:
         cleaned_examples.append({
             "motifs": {str(pattern): positions for pattern, positions in ex["motifs"].items()},
             "context": clean_for_json(ex["context"]),
             "target": clean_for_json(ex["target"]),
-            "cut_index": ex["cut_index"],
+            "cut_time": float(ex["cut_time"]),
         })
 
     return cleaned_examples
@@ -49,12 +54,12 @@ def precompute_all(maestro_root, output_dir, years=None):
 
         for filename in midi_files:
             path = os.path.join(year_path, filename)
-            piece_id = f"{year}_{filename}"
+            piece_id = f"{year}_{filename}"  # filenames repeat across years
 
             try:
                 examples = precompute_piece(path)
                 if examples is None:
-                    continue
+                    continue  # too short
 
                 out_path = os.path.join(output_dir, f"{piece_id}.json")
                 with open(out_path, "w") as f:
@@ -71,6 +76,7 @@ def precompute_all(maestro_root, output_dir, years=None):
 
         print(f"finished year {year}: {len(index)} pieces so far, {len(errors)} errors so far")
 
+    # index of what got written
     with open(os.path.join(output_dir, "index.json"), "w") as f:
         json.dump(index, f, indent=2)
 

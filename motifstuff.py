@@ -1,11 +1,20 @@
-import os
-import json
 import torch
+import json
+import os
 from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
+
+PAD_VALUE = 128  # one past the midi range (0-127)
 
 
 class MotifDataset(Dataset):
+    """
+    flat dataset over the precomputed json files.
 
+    uses raw midi pitches, not aria's tokenizer, so it never got wired into
+    training (train_one_epoch / train_with_epochs read the json directly).
+    leaving it here in case i want a pitch level pipeline later.
+    """
 
     def __init__(self, precomputed_dir):
         self.precomputed_dir = precomputed_dir
@@ -14,6 +23,7 @@ class MotifDataset(Dataset):
         with open(index_path) as f:
             self.piece_index = json.load(f)
 
+        # example index -> (file, position in that file)
         self.flat_index = []
         for entry in self.piece_index:
             for local_i in range(entry["num_examples"]):
@@ -31,7 +41,6 @@ class MotifDataset(Dataset):
 
         example = piece_examples[local_i]
 
-     
         context_pitches = torch.tensor([note[2] for note in example["context"]], dtype=torch.long)
         target_pitches = torch.tensor([note[2] for note in example["target"]], dtype=torch.long)
 
@@ -41,17 +50,9 @@ class MotifDataset(Dataset):
             "motif_patterns": list(example["motifs"].keys()),
         }
 
-    
-
-
-#ok so i added this basically it pads everythign so i can feed everything in one batch cs eveerythings different
-import torch
-from torch.nn.utils.rnn import pad_sequence
-
-PAD_VALUE = 128
 
 def motif_collate_fn(batch):
-
+    """pad a list of examples from MotifDataset into one batch"""
     contexts = [item["context"] for item in batch]
     targets = [item["target"] for item in batch]
 
